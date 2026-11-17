@@ -186,6 +186,8 @@ class SnowCanvas(QWidget):
         self._pile_slope = config.SNOW_PILE_SLOPE
         self._clump_max = config.SNOW_CLUMP_MAX
         self._clump_radius = float(config.SNOW_CLUMP_RADIUS)
+        # Slipping is the interactive "выпадение из хватки" behaviour: when on,
+        # a flake that lags too far behind the cursor leaves the clump.
         self._slip_enabled = bool(config.SNOW_SLIP_ENABLED)
         self._follow_lerp = float(config.SNOW_FOLLOW_LERP)
         self._clump_leash = float(config.SNOW_CLUMP_LEASH)
@@ -625,26 +627,40 @@ class SnowCanvas(QWidget):
         cursor = self._cursor_local()
         lerp = self._follow_lerp
         leash_sq = self._clump_leash ** 2
+        cx = cursor.x()
+        cy = cursor.y()
         still: List[_Flake] = []
+        # At most one flake slips per tick: a sharp jerk does not strip the
+        # whole clump at once, it thins out over the next few frames.
+        worst: Optional[_Flake] = None
+        worst_lag = leash_sq
         for flake in self._attached:
             offset = self._slot_offsets[flake.slot]
-            target_x = cursor.x() + offset[0]
-            target_y = cursor.y() + offset[1]
-            flake.x += (target_x - flake.x) * lerp
-            flake.y += (target_y - flake.y) * lerp
+            flake.x += (cx + offset[0] - flake.x) * lerp
+            flake.y += (cy + offset[1] - flake.y) * lerp
 
-            dx = flake.x - cursor.x()
-            dy = flake.y - cursor.y()
-            if self._slip_enabled and dx * dx + dy * dy > leash_sq:
-                # It could not keep up: it slips out and falls. It cannot be
-                # grabbed again until the mouse is released.
-                if 0 <= flake.slot < len(self._slot_used):
-                    self._slot_used[flake.slot] = False
-                flake.slot = -1
-                flake.blocked = True
-                self._flakes.append(flake)
+            if not self._slip_enabled:
+                still.append(flake)
+                continue
+            dx = flake.x - cx
+            dy = flake.y - cy
+            lag = dx * dx + dy * dy
+            if lag > worst_lag:
+                if worst is not None:
+                    still.append(worst)  # a later flake lags even more
+                worst = flake
+                worst_lag = lag
             else:
                 still.append(flake)
+
+        if worst is not None:
+            # It could not keep up: it slips out and falls. It cannot be
+            # grabbed again until the mouse is released.
+            if 0 <= worst.slot < len(self._slot_used):
+                self._slot_used[worst.slot] = False
+            worst.slot = -1
+            worst.blocked = True
+            self._flakes.append(worst)
         self._attached = still
 
     def _unblock_all(self) -> None:

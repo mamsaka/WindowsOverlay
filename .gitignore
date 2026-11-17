@@ -22,5 +22,10 @@ Thumbs.db
 # Logs
 *.log
 
+# PyInstaller build output
+build/
+dist/
+*.spec
+
 # Saved user settings (snow parameters only; functional settings are not stored)
 settings.env

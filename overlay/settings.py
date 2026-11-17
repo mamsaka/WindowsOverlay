@@ -7,9 +7,23 @@ package, and is ignored by git.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
-SETTINGS_PATH = Path(__file__).resolve().parent.parent / "settings.env"
+
+def _base_dir() -> Path:
+    """Directory that holds settings.env.
+
+    In a PyInstaller build ``__file__`` points inside the temporary unpack
+    directory, so settings stored there would be lost on exit; keep them next
+    to the executable instead.
+    """
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent.parent
+
+
+SETTINGS_PATH = _base_dir() / "settings.env"
 
 
 def load() -> dict[str, str]:
