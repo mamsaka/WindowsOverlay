@@ -242,14 +242,32 @@ class SnowCanvas(QWidget):
     def _new_flake(self, at_top: bool = False) -> _Flake:
         w = max(1, self.width())
         h = max(1, self.height())
-        y = random.uniform(-40.0, -4.0) if at_top else random.uniform(0, h)
+        if at_top:
+            x, y = self._spawn_point(w, h)
+        else:
+            x, y = random.uniform(0.0, w), random.uniform(0.0, h)
         return _Flake(
-            random.uniform(0, w),
+            x,
             y,
             fall_scale=self._fall_scale,
             radius_scale=self._size_scale,
             sway_scale=self._sway_scale,
         )
+
+    def _spawn_point(self, w: float, h: float) -> tuple[float, float]:
+        """Where a brand-new flake enters the scene.
+
+        With no wind it drops in from the top. The stronger the wind, the more
+        often it enters from the windward edge instead, so the snowfall looks
+        like it is being carried across the screen.
+        """
+        wind = self._wind
+        if wind and random.random() < min(1.0, abs(wind)):
+            # Positive wind drifts rightwards, so snow blows in from the left.
+            depth = random.uniform(4.0, config.SNOW_SIDE_SPAWN_DEPTH)
+            x = -depth if wind > 0 else w + depth
+            return x, random.uniform(-24.0, h * 0.9)
+        return random.uniform(0.0, w), random.uniform(-40.0, -4.0)
 
     def _fill_pool(self) -> None:
         target = self._target_count()

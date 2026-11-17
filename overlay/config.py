@@ -57,6 +57,7 @@ SNOW_CLUMP_MAX = 20            # how many flakes can stick to the cursor
 SNOW_CLUMP_RADIUS = 18         # clump radius around the cursor in pixels
 SNOW_CLUMP_LEASH = 48          # max distance an attached flake may lag behind (px)
 SNOW_SPAWN_PER_SEC = 150       # flakes entering from the top per second (full density)
+SNOW_SIDE_SPAWN_DEPTH = 24     # how far outside the edge wind-blown flakes appear
 
 # "Released" flakes (dropped by the cursor): same rules as normal snow, but
 # with these multipliers applied to wind, fall speed and sway.
