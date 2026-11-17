@@ -178,6 +178,9 @@ class SnowCanvas(QWidget):
         self._pile_slope = config.SNOW_PILE_SLOPE
         self._clump_max = config.SNOW_CLUMP_MAX
         self._clump_radius = float(config.SNOW_CLUMP_RADIUS)
+        self._slip_enabled = bool(config.SNOW_SLIP_ENABLED)
+        self._follow_lerp = float(config.SNOW_FOLLOW_LERP)
+        self._clump_leash = float(config.SNOW_CLUMP_LEASH)
         self._slot_offsets: List[tuple[float, float]] = []
         self._slot_used: List[bool] = []
         self._spawn_accum = 0.0
@@ -299,6 +302,18 @@ class SnowCanvas(QWidget):
         for flake in self._attached:
             if 0 <= flake.slot < len(self._slot_used):
                 self._slot_used[flake.slot] = True
+
+    def set_slip_enabled(self, enabled: bool) -> None:
+        self._slip_enabled = bool(enabled)
+        if not self._slip_enabled:
+            # Nothing may slip now, so previously slipped flakes are grabbable.
+            self._unblock_all()
+
+    def set_clump_leash(self, leash: float) -> None:
+        self._clump_leash = max(8.0, float(leash))
+
+    def set_follow_lerp(self, lerp: float) -> None:
+        self._follow_lerp = max(0.05, min(1.0, float(lerp)))
 
     def set_released_wind(self, scale: float) -> None:
         config.SNOW_RELEASED_WIND = max(0.0, float(scale))
@@ -597,8 +612,8 @@ class SnowCanvas(QWidget):
 
     def _move_attached(self) -> None:
         cursor = self._cursor_local()
-        lerp = config.SNOW_FOLLOW_LERP
-        leash_sq = config.SNOW_CLUMP_LEASH ** 2
+        lerp = self._follow_lerp
+        leash_sq = self._clump_leash ** 2
         still: List[_Flake] = []
         for flake in self._attached:
             offset = self._slot_offsets[flake.slot]
@@ -609,7 +624,7 @@ class SnowCanvas(QWidget):
 
             dx = flake.x - cursor.x()
             dy = flake.y - cursor.y()
-            if dx * dx + dy * dy > leash_sq:
+            if self._slip_enabled and dx * dx + dy * dy > leash_sq:
                 # It could not keep up: it slips out and falls. It cannot be
                 # grabbed again until the mouse is released.
                 if 0 <= flake.slot < len(self._slot_used):

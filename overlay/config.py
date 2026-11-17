@@ -56,6 +56,7 @@ SNOW_FOLLOW_LERP = 0.35        # how fast grabbed flakes chase the cursor
 SNOW_CLUMP_MAX = 20            # how many flakes can stick to the cursor
 SNOW_CLUMP_RADIUS = 18         # clump radius around the cursor in pixels
 SNOW_CLUMP_LEASH = 48          # max distance an attached flake may lag behind (px)
+SNOW_SLIP_ENABLED = True       # allow flakes to slip out of the clump when lagging
 SNOW_SPAWN_PER_SEC = 150       # flakes entering from the top per second (full density)
 SNOW_SIDE_SPAWN_DEPTH = 24     # how far outside the edge wind-blown flakes appear
 

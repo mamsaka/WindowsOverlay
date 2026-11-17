@@ -135,6 +135,9 @@ class SlideMenu(QFrame):
     releasedWindChanged = pyqtSignal(float)
     releasedSpeedChanged = pyqtSignal(float)
     releasedSwayChanged = pyqtSignal(float)
+    slipToggled = pyqtSignal(bool)
+    slipLeashChanged = pyqtSignal(float)
+    slipFollowChanged = pyqtSignal(float)
     windowsToggled = pyqtSignal(bool)
     windowPileChanged = pyqtSignal(int)
     windowSlopeChanged = pyqtSignal(int)
@@ -246,6 +249,17 @@ class SlideMenu(QFrame):
             self._make_released_block()
         )
 
+        self.slip_block, self.slip_toggle = self._make_toggle_row("Выпадение из хватки")
+        self.slip_toggle.setChecked(True)  # on by default
+        self.leash_block, self.leash_slider, _ = self._make_block(
+            "Поводок", "насколько может отстать снежинка", 10, 200,
+            int(config.SNOW_CLUMP_LEASH), lambda v: f"{v} px",
+        )
+        self.follow_block, self.follow_slider, _ = self._make_block(
+            "Следование", "скорость догона курсора", 10, 100,
+            int(round(config.SNOW_FOLLOW_LERP * 100)), lambda v: f"{v}%",
+        )
+
         self.windows_block, self.windows_toggle = self._make_toggle_row("Сбор на окнах")
         self.window_pile_block, self.window_pile_slider, _ = self._make_block(
             "Вал на окнах", "снежинок в столбике", 1, 10,
@@ -269,6 +283,11 @@ class SlideMenu(QFrame):
             self.pile_block,
             self.slope_block,
             self.released_block,
+            self.slip_block,
+        )
+        self._slip_blocks = (
+            self.leash_block,
+            self.follow_block,
         )
         self._window_blocks = (
             self.window_pile_block,
@@ -279,6 +298,8 @@ class SlideMenu(QFrame):
             root.addWidget(block)
         root.addWidget(self.interactive_block)
         for block in self._pile_blocks:
+            root.addWidget(block)
+        for block in self._slip_blocks:
             root.addWidget(block)
         root.addWidget(self.windows_block)
         for block in self._window_blocks:
@@ -307,6 +328,9 @@ class SlideMenu(QFrame):
         self.released_wind.valueChanged.connect(self.releasedWindChanged.emit)
         self.released_speed.valueChanged.connect(self.releasedSpeedChanged.emit)
         self.released_sway.valueChanged.connect(self.releasedSwayChanged.emit)
+        self.slip_toggle.toggled.connect(self._on_slip_toggled)
+        self.leash_slider.valueChanged.connect(lambda v: self.slipLeashChanged.emit(float(v)))
+        self.follow_slider.valueChanged.connect(lambda v: self.slipFollowChanged.emit(v / 100.0))
         self.windows_toggle.toggled.connect(self._on_windows_toggled)
         self.window_pile_slider.valueChanged.connect(self.windowPileChanged.emit)
         self.window_slope_slider.valueChanged.connect(self.windowSlopeChanged.emit)
@@ -425,12 +449,15 @@ class SlideMenu(QFrame):
         snow_on = self.toggle.isChecked()
         interactive_on = snow_on and self.interactive_toggle.isChecked()
         windows_on = interactive_on and self.windows_toggle.isChecked()
+        slip_on = interactive_on and self.slip_toggle.isChecked()
 
         self.interactive_block.setVisible(snow_on)
         for block in self._snow_blocks:
             block.setVisible(snow_on)
         for block in self._pile_blocks:
             block.setVisible(interactive_on)
+        for block in self._slip_blocks:
+            block.setVisible(slip_on)
         self.windows_block.setVisible(interactive_on)
         for block in self._window_blocks:
             block.setVisible(windows_on)
@@ -446,6 +473,10 @@ class SlideMenu(QFrame):
     def _on_windows_toggled(self, checked: bool) -> None:
         self._apply_visibility()
         self.windowsToggled.emit(checked)
+
+    def _on_slip_toggled(self, checked: bool) -> None:
+        self._apply_visibility()
+        self.slipToggled.emit(checked)
 
     # -- state -----------------------------------------------------------
     @property
