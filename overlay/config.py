@@ -59,6 +59,15 @@ SNOW_CLUMP_LEASH = 48          # max distance an attached flake may lag behind (
 SNOW_SPAWN_PER_SEC = 150       # flakes entering from the top per second (full density)
 SNOW_SIDE_SPAWN_DEPTH = 24     # how far outside the edge wind-blown flakes appear
 
+# Optional snow collection on the top edges of ordinary desktop windows
+# ("Сбор на окнах" in the menu). Each window edge gets its own pile height and
+# crumble threshold; everything is re-read from the desktop every poll.
+SNOW_WINDOW_PILE_MAX = 3       # max flakes stacked per column on a window top
+SNOW_WINDOW_PILE_SLOPE = 1     # height gap that makes window snow crumble/slide off
+SNOW_WINDOW_POLL_MS = 150      # how often window positions/z-order are re-read
+SNOW_WINDOW_MIN_WIDTH = 80     # ignore tiny windows (px)
+SNOW_WINDOW_MAX_SURFACES = 10  # track at most this many windows
+
 # "Released" flakes (dropped by the cursor): same rules as normal snow, but
 # with these multipliers applied to wind, fall speed and sway.
 SNOW_RELEASED_WIND = 1.0

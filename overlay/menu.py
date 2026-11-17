@@ -135,6 +135,9 @@ class SlideMenu(QFrame):
     releasedWindChanged = pyqtSignal(float)
     releasedSpeedChanged = pyqtSignal(float)
     releasedSwayChanged = pyqtSignal(float)
+    windowsToggled = pyqtSignal(bool)
+    windowPileChanged = pyqtSignal(int)
+    windowSlopeChanged = pyqtSignal(int)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -243,6 +246,16 @@ class SlideMenu(QFrame):
             self._make_released_block()
         )
 
+        self.windows_block, self.windows_toggle = self._make_toggle_row("Сбор на окнах")
+        self.window_pile_block, self.window_pile_slider, _ = self._make_block(
+            "Вал на окнах", "снежинок в столбике", 1, 10,
+            config.SNOW_WINDOW_PILE_MAX, lambda v: f"{v}",
+        )
+        self.window_slope_block, self.window_slope_slider, _ = self._make_block(
+            "Осыпание на окнах", "перепад для обвала с края", 1, 10,
+            config.SNOW_WINDOW_PILE_SLOPE, lambda v: f"{v}",
+        )
+
         self._snow_blocks = (
             self.density_block,
             self.wind_block,
@@ -257,11 +270,18 @@ class SlideMenu(QFrame):
             self.slope_block,
             self.released_block,
         )
+        self._window_blocks = (
+            self.window_pile_block,
+            self.window_slope_block,
+        )
 
         for block in self._snow_blocks:
             root.addWidget(block)
         root.addWidget(self.interactive_block)
         for block in self._pile_blocks:
+            root.addWidget(block)
+        root.addWidget(self.windows_block)
+        for block in self._window_blocks:
             root.addWidget(block)
 
         root.addWidget(self._make_separator())
@@ -287,6 +307,9 @@ class SlideMenu(QFrame):
         self.released_wind.valueChanged.connect(self.releasedWindChanged.emit)
         self.released_speed.valueChanged.connect(self.releasedSpeedChanged.emit)
         self.released_sway.valueChanged.connect(self.releasedSwayChanged.emit)
+        self.windows_toggle.toggled.connect(self._on_windows_toggled)
+        self.window_pile_slider.valueChanged.connect(self.windowPileChanged.emit)
+        self.window_slope_slider.valueChanged.connect(self.windowSlopeChanged.emit)
 
         self._apply_visibility()
 
@@ -401,12 +424,16 @@ class SlideMenu(QFrame):
     def _apply_visibility(self) -> None:
         snow_on = self.toggle.isChecked()
         interactive_on = snow_on and self.interactive_toggle.isChecked()
+        windows_on = interactive_on and self.windows_toggle.isChecked()
 
         self.interactive_block.setVisible(snow_on)
         for block in self._snow_blocks:
             block.setVisible(snow_on)
         for block in self._pile_blocks:
             block.setVisible(interactive_on)
+        self.windows_block.setVisible(interactive_on)
+        for block in self._window_blocks:
+            block.setVisible(windows_on)
 
     def _on_snow_toggled(self, checked: bool) -> None:
         self._apply_visibility()
@@ -415,6 +442,10 @@ class SlideMenu(QFrame):
     def _on_interactive_toggled(self, checked: bool) -> None:
         self._apply_visibility()
         self.interactiveToggled.emit(checked)
+
+    def _on_windows_toggled(self, checked: bool) -> None:
+        self._apply_visibility()
+        self.windowsToggled.emit(checked)
 
     # -- state -----------------------------------------------------------
     @property

@@ -105,6 +105,9 @@ class OverlayWindow(QWidget):
         self.menu.releasedWindChanged.connect(self.snow.set_released_wind)
         self.menu.releasedSpeedChanged.connect(self.snow.set_released_speed)
         self.menu.releasedSwayChanged.connect(self.snow.set_released_sway)
+        self.menu.windowsToggled.connect(self.snow.set_windows_enabled)
+        self.menu.windowPileChanged.connect(self.snow.set_window_pile_max)
+        self.menu.windowSlopeChanged.connect(self.snow.set_window_slope)
         self.menu.clickThroughToggled.connect(self.enable_click_through)
 
         self._click_through = True

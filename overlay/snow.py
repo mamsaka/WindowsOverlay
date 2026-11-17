@@ -1,9 +1,11 @@
-"""Snowfall, an optional interactive mode, and a crumbling snow pile.
+"""Snowfall, an optional interactive mode, and crumbling snow piles.
 
-Falling flakes land on top of a column-based pile along the bottom edge (the
-taskbar boundary). Piled flakes are real particles too: they can be picked up
-with a held mouse button, and a column that is too much taller than a
-neighbour topples into it until the pile is stable.
+Falling flakes settle on column-based piles. By default that is a single pile
+along the bottom edge (the taskbar boundary); with "Сбор на окнах" enabled they
+also settle on the top edges of ordinary desktop windows, each window with its
+own pile height and crumble threshold. Piled flakes are real particles: they can
+be picked up with a held mouse button, and a column that is too much taller than
+a neighbour topples into it until the pile is stable.
 
 Most numeric behaviour is adjustable at runtime through the ``set_*`` methods
 (defaults live in ``overlay/config.py`` and are exposed in the menu).
@@ -11,21 +13,24 @@ Most numeric behaviour is adjustable at runtime through the ``set_*`` methods
 
 from __future__ import annotations
 
+import logging
 import math
 import random
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from PyQt6.QtCore import QPointF, Qt, QTimer
 from PyQt6.QtGui import QColor, QCursor, QPainter, QPixmap
 from PyQt6.QtWidgets import QWidget
 
-from . import config, winapi
+from . import config, surfaces, winapi
+
+LOGGER = logging.getLogger(__name__)
 
 
 class _Flake:
     __slots__ = (
         "x", "y", "radius", "fall", "phase", "sway_speed", "sway_amp",
-        "slot", "through", "released", "blocked",
+        "slot", "released", "blocked",
     )
 
     def __init__(
@@ -46,7 +51,6 @@ class _Flake:
         )
         self.sway_amp = random.uniform(0.35, 1.0) * config.SNOW_SWAY_AMPLITUDE * sway_scale
         self.slot = -1
-        self.through = False
         self.released = False
         self.blocked = False
 
@@ -58,6 +62,91 @@ class _Flake:
 
     def sway_scale(self) -> float:
         return config.SNOW_RELEASED_SWAY if self.released else 1.0
+
+
+class _Surface:
+    """A horizontal line flakes settle on: the ground or a window's top edge."""
+
+    __slots__ = (
+        "hwnd", "left", "right", "base_y", "pile_max", "slope",
+        "columns", "blocked", "ground", "key",
+    )
+
+    def __init__(
+        self,
+        left: float,
+        right: float,
+        base_y: float,
+        pile_max: int,
+        slope: int,
+        *,
+        hwnd: int = 0,
+        ground: bool = False,
+    ) -> None:
+        self.hwnd = hwnd
+        self.left = float(left)
+        self.right = float(right)
+        self.base_y = float(base_y)
+        self.pile_max = max(1, int(pile_max))
+        self.slope = max(1, int(slope))
+        self.ground = ground
+        self.key: Tuple[int, int, int] = (0, 0, 0)
+        self.columns: List[List[_Flake]] = [[] for _ in range(self._count())]
+        self.blocked: List[bool] = [False] * len(self.columns)
+
+    # -- geometry -------------------------------------------------------
+    def _count(self) -> int:
+        cell = config.SNOW_PILE_CELL
+        span = self.right - self.left
+        if self.ground:
+            # Two spare columns keep the old edge behaviour (snow may land
+            # slightly outside the canvas and is clamped back in).
+            return max(1, int(span // cell) + 2)
+        return max(1, int(span // cell))
+
+    def column_for(self, x: float) -> Optional[int]:
+        index = int((x - self.left) // config.SNOW_PILE_CELL)
+        if self.ground:
+            return max(0, min(len(self.columns) - 1, index))
+        if 0 <= index < len(self.columns):
+            return index
+        return None
+
+    def is_edge(self, column: int) -> bool:
+        return column == 0 or column == len(self.columns) - 1
+
+    def column_center(self, column: int) -> float:
+        return self.left + (column + 0.5) * config.SNOW_PILE_CELL
+
+    def level_y(self, level: int) -> float:
+        return self.base_y - (level + 0.5) * config.SNOW_PILE_CELL
+
+    def landing_y(self, column: int) -> float:
+        return self.level_y(len(self.columns[column]))
+
+    # -- pile -----------------------------------------------------------
+    def place(self, column: int, level: int, flake: _Flake) -> None:
+        flake.x = self.column_center(column)
+        flake.y = self.level_y(level)
+        flake.blocked = False
+
+    def reposition(self, column: int) -> None:
+        for level, flake in enumerate(self.columns[column]):
+            self.place(column, level, flake)
+
+    def has_snow(self) -> bool:
+        return any(self.columns)
+
+    def crumbles(self, height: int, neighbour: int) -> bool:
+        """Whether a column is too steep next to a neighbour of given height.
+
+        The ground keeps the original "gap >= slope" rule. Window tops use a
+        strict "gap > slope": with the menu default of 1 this still lets a
+        single flake rest (a gap of one is tolerated) while any taller stack
+        slides off, instead of every flake endlessly rolling back and forth.
+        """
+        gap = height - neighbour
+        return gap >= self.slope if self.ground else gap > self.slope
 
 
 class SnowCanvas(QWidget):
@@ -74,7 +163,6 @@ class SnowCanvas(QWidget):
 
         self._flakes: List[_Flake] = []
         self._attached: List[_Flake] = []
-        self._columns: List[List[_Flake]] = [[]]
 
         self._enabled = False
         self._interactive = False
@@ -95,6 +183,13 @@ class SnowCanvas(QWidget):
         self._spawn_accum = 0.0
         self._was_held = False
         self._build_clump_slots()
+
+        self._ground = self._make_ground()
+        self._windows: Dict[int, _Surface] = {}
+        self._windows_enabled = False
+        self._window_pile_max = config.SNOW_WINDOW_PILE_MAX
+        self._window_slope = config.SNOW_WINDOW_PILE_SLOPE
+        self._window_wait = 0
 
         self._pile_pixmap: Optional[QPixmap] = None
         self._pile_dirty = True
@@ -128,8 +223,11 @@ class SnowCanvas(QWidget):
         self._interactive = enabled
         if not enabled:
             self._release_attached()
+            self._drop_windows()
             self._clear_pile()
             self.update()
+        else:
+            self._window_wait = 0
 
     def set_fall_scale(self, scale: float) -> None:
         scale = max(0.05, scale)
@@ -158,13 +256,31 @@ class SnowCanvas(QWidget):
 
     def set_pile_max(self, maximum: int) -> None:
         self._pile_max = max(1, int(maximum))
-        for column in range(len(self._columns)):
-            while len(self._columns[column]) > self._pile_max:
-                self._columns[column].pop()  # excess is discarded
+        self._ground.pile_max = self._pile_max
+        self._trim(self._ground)
         self._pile_dirty = True
 
     def set_pile_slope(self, slope: int) -> None:
         self._pile_slope = max(1, int(slope))
+        self._ground.slope = self._pile_slope
+
+    def set_windows_enabled(self, enabled: bool) -> None:
+        self._windows_enabled = enabled
+        self._window_wait = 0
+        if not enabled:
+            self._drop_windows()
+
+    def set_window_pile_max(self, maximum: int) -> None:
+        self._window_pile_max = max(1, int(maximum))
+        for surface in self._windows.values():
+            surface.pile_max = self._window_pile_max
+            self._trim(surface)
+        self._pile_dirty = True
+
+    def set_window_slope(self, slope: int) -> None:
+        self._window_slope = max(1, int(slope))
+        for surface in self._windows.values():
+            surface.slope = self._window_slope
 
     def set_clump_max(self, maximum: int) -> None:
         self._clump_max = max(1, int(maximum))
@@ -211,29 +327,156 @@ class SnowCanvas(QWidget):
                 return index
         return -1
 
-    # -- geometry helpers -----------------------------------------------
-    def _column_count(self) -> int:
-        return max(1, int(self.width() // config.SNOW_PILE_CELL) + 2)
+    # -- surfaces --------------------------------------------------------
+    def _make_ground(self) -> _Surface:
+        return _Surface(
+            0.0,
+            float(max(1, self.width())),
+            float(max(1, self.height())),
+            self._pile_max,
+            self._pile_slope,
+            ground=True,
+        )
 
-    def _column_for(self, x: float) -> int:
-        column = int(x // config.SNOW_PILE_CELL)
-        return max(0, min(len(self._columns) - 1, column))
+    def _surfaces(self) -> List[_Surface]:
+        return [self._ground, *self._windows.values()]
 
-    def _level_y(self, level: int) -> float:
-        return self.height() - (level + 0.5) * config.SNOW_PILE_CELL
-
-    def _place(self, column: int, level: int, flake: _Flake) -> None:
-        flake.x = column * config.SNOW_PILE_CELL + config.SNOW_PILE_CELL / 2
-        flake.y = self._level_y(level)
-        flake.blocked = False
-
-    def _reposition(self, column: int) -> None:
-        for level, flake in enumerate(self._columns[column]):
-            self._place(column, level, flake)
+    def _trim(self, surface: _Surface) -> None:
+        for column, stack in enumerate(surface.columns):
+            while len(stack) > surface.pile_max:
+                stack.pop()  # excess is discarded
+            surface.reposition(column)
 
     def _clear_pile(self) -> None:
-        self._columns = [[] for _ in range(self._column_count())]
+        self._ground = self._make_ground()
+        for surface in self._windows.values():
+            for stack in surface.columns:
+                stack.clear()
         self._pile_dirty = True
+
+    def _drop_column(self, surface: _Surface, column: int) -> None:
+        stack = surface.columns[column]
+        if not stack:
+            return
+        self._flakes.extend(stack)
+        stack.clear()
+        self._pile_dirty = True
+
+    def _drop_surface(self, surface: _Surface) -> None:
+        for column in range(len(surface.columns)):
+            self._drop_column(surface, column)
+
+    def _drop_windows(self) -> None:
+        for surface in self._windows.values():
+            self._drop_surface(surface)
+        self._windows.clear()
+        self._pile_dirty = True
+
+    # -- desktop windows -------------------------------------------------
+    def _poll_windows(self) -> None:
+        if not (self._windows_enabled and self._interactive):
+            return
+        self._window_wait -= config.SNOW_TICK_MS
+        if self._window_wait > 0:
+            return
+        self._window_wait = config.SNOW_WINDOW_POLL_MS
+        self._sync_windows()
+
+    def _sync_windows(self) -> None:
+        """Re-read the desktop windows and rebuild the surfaces on their tops."""
+        top_level = self.window()
+        exclude = int(top_level.winId()) if top_level is not None else 0
+        try:
+            found = surfaces.list_windows((exclude,))
+        except Exception:  # pragma: no cover - defensive
+            LOGGER.exception("Не удалось перечислить окна для снега")
+            return
+
+        dpr = self.devicePixelRatioF() or 1.0
+        width = float(self.width())
+        height = float(self.height())
+        limit = max(1, int(config.SNOW_WINDOW_MAX_SURFACES))
+        min_width = float(config.SNOW_WINDOW_MIN_WIDTH)
+
+        previous = self._windows
+        current: Dict[int, _Surface] = {}
+        above: List[Tuple[float, float, float, float]] = []
+
+        for win in found:
+            left = win.left / dpr
+            top = win.top / dpr
+            right = win.right / dpr
+            bottom = win.bottom / dpr
+
+            usable = (
+                not win.maximized
+                and right - left >= min_width
+                and bottom - top > 0.0
+                and 8.0 <= top <= height - 24.0
+                and right > 0.0
+                and left < width
+                and len(current) < limit
+            )
+            if usable:
+                old = previous.get(win.hwnd)
+                key = (round(left), round(top), round(right))
+                if old is not None and old.key == key:
+                    surface = old
+                else:
+                    if old is not None:
+                        self._drop_surface(old)  # moved/resized: let it fall
+                    surface = _Surface(
+                        left,
+                        right,
+                        top,
+                        self._window_pile_max,
+                        self._window_slope,
+                        hwnd=win.hwnd,
+                    )
+                    surface.key = key
+
+                blocked = self._blocked_columns(surface, above)
+                if blocked != surface.blocked:
+                    for column, hidden in enumerate(blocked):
+                        if hidden and not surface.blocked[column]:
+                            self._drop_column(surface, column)  # now hidden
+                    surface.blocked = blocked
+                current[win.hwnd] = surface
+
+            above.append((left, top, right, bottom))
+
+        for hwnd, surface in previous.items():
+            if current.get(hwnd) is not surface:
+                self._drop_surface(surface)
+
+        self._windows = current
+
+    @staticmethod
+    def _blocked_columns(
+        surface: _Surface,
+        above: List[Tuple[float, float, float, float]],
+    ) -> List[bool]:
+        """Columns whose top edge is hidden behind a window that is higher up."""
+        blocked = [False] * len(surface.columns)
+        cover = [
+            rect for rect in above
+            if rect[0] < surface.right and rect[2] > surface.left
+        ]
+        if not cover:
+            return blocked
+
+        reach = max(12.0, 2.0 * config.SNOW_PILE_CELL)
+        for column in range(len(surface.columns)):
+            x = surface.column_center(column)
+            edge = surface.base_y
+            pile_top = edge - reach
+            for left, top, right, bottom in cover:
+                if left <= x < right and (
+                    top <= edge <= bottom or top <= pile_top <= bottom
+                ):
+                    blocked[column] = True
+                    break
+        return blocked
 
     # -- pool ------------------------------------------------------------
     def _target_count(self) -> int:
@@ -299,7 +542,6 @@ class SnowCanvas(QWidget):
         if slot < 0:
             return False
         flake.slot = slot
-        flake.through = False
         self._attached.append(flake)
         return True
 
@@ -321,36 +563,37 @@ class SnowCanvas(QWidget):
         """Pull piled flakes near the cursor and let unsupported ones fall."""
         cursor = self._cursor_local()
         radius_sq = self._grab_radius ** 2
-        for column in range(len(self._columns)):
-            stack = self._columns[column]
-            if not stack:
-                continue
-            hit = [
-                i for i, f in enumerate(stack)
-                if (f.x - cursor.x()) ** 2 + (f.y - cursor.y()) ** 2 <= radius_sq
-            ]
-            if not hit:
-                continue
+        for surface in self._surfaces():
+            for column in range(len(surface.columns)):
+                stack = surface.columns[column]
+                if not stack:
+                    continue
+                hit = [
+                    i for i, f in enumerate(stack)
+                    if (f.x - cursor.x()) ** 2 + (f.y - cursor.y()) ** 2 <= radius_sq
+                ]
+                if not hit:
+                    continue
 
-            # Only remove flakes we can actually take; if the clump is full,
-            # leave the pile untouched.
-            grabbed = [i for i in hit if self._attach(stack[i])]
-            if not grabbed:
-                continue
+                # Only remove flakes we can actually take; if the clump is
+                # full, leave the pile untouched.
+                grabbed = [i for i in hit if self._attach(stack[i])]
+                if not grabbed:
+                    continue
 
-            lowest = min(grabbed)
-            kept: List[_Flake] = []
-            for i, flake in enumerate(stack):
-                if i in grabbed:
-                    continue  # taken into the clump
-                if i > lowest:
-                    # Lost its support: let it fall and settle again.
-                    self._flakes.append(flake)
-                else:
-                    kept.append(flake)
-            self._columns[column] = kept
-            self._reposition(column)
-            self._pile_dirty = True
+                lowest = min(grabbed)
+                kept: List[_Flake] = []
+                for i, flake in enumerate(stack):
+                    if i in grabbed:
+                        continue  # taken into the clump
+                    if i > lowest:
+                        # Lost its support: let it fall and settle again.
+                        self._flakes.append(flake)
+                    else:
+                        kept.append(flake)
+                surface.columns[column] = kept
+                surface.reposition(column)
+                self._pile_dirty = True
 
     def _move_attached(self) -> None:
         cursor = self._cursor_local()
@@ -384,35 +627,97 @@ class SnowCanvas(QWidget):
             flake.blocked = False
 
     # -- pile physics ----------------------------------------------------
-    def _land(self, flake: _Flake) -> bool:
-        """Drop a flake onto a column; False when the column is already full."""
-        column = self._column_for(flake.x)
-        if len(self._columns[column]) >= self._pile_max:
-            return False
-        self._columns[column].append(flake)
-        self._place(column, len(self._columns[column]) - 1, flake)
-        self._pile_dirty = True
-        return True
+    def _try_land(
+        self,
+        flake: _Flake,
+        prev_y: float,
+        surfaces_now: List[_Surface],
+    ) -> bool:
+        """Settle a flake on the first surface below it that has room."""
+        candidates: List[Tuple[float, int, _Surface]] = []
+        for surface in surfaces_now:
+            column = surface.column_for(flake.x)
+            if column is None or surface.blocked[column]:
+                continue
+            landing_y = surface.landing_y(column)
+            if surface.ground:
+                reached = flake.y >= landing_y
+            else:
+                # Windows are only hit when crossed from above: a flake in
+                # front of a window keeps falling past it.
+                reached = prev_y < landing_y <= flake.y
+            if reached:
+                candidates.append((landing_y, column, surface))
+
+        candidates.sort(key=lambda item: item[0])
+        for _landing_y, column, surface in candidates:
+            stack = surface.columns[column]
+            if len(stack) >= surface.pile_max:
+                continue  # no room here: keep falling to the surface below
+            if (
+                not surface.ground
+                and surface.is_edge(column)
+                and len(stack) >= surface.slope
+            ):
+                # The brim is loaded: the flake slides over the window edge.
+                cell = config.SNOW_PILE_CELL
+                flake.x = surface.left - cell if column == 0 else surface.right + cell
+                return False
+            stack.append(flake)
+            surface.place(column, len(stack) - 1, flake)
+            self._pile_dirty = True
+            return True
+        return False
 
     def _stabilize(self) -> None:
+        for surface in self._surfaces():
+            if surface.has_snow():
+                self._stabilize_surface(surface)
+
+    def _stabilize_surface(self, surface: _Surface) -> None:
         """Crumble columns that are too much taller than a neighbour."""
-        slope = self._pile_slope
-        for _ in range(len(self._columns) * self._pile_max):
+        columns = surface.columns
+        for _ in range(len(columns) * max(1, surface.pile_max)):
             moved = False
-            for column in range(len(self._columns)):
-                height = len(self._columns[column])
+            for column in range(len(columns)):
+                height = len(columns[column])
+                if height == 0:
+                    continue
+                if (
+                    not surface.ground
+                    and surface.is_edge(column)
+                    and height > surface.slope
+                ):
+                    # The brim is overloaded: snow spills off the window edge.
+                    flake = columns[column].pop()
+                    flake.x = (
+                        surface.left - config.SNOW_PILE_CELL
+                        if column == 0
+                        else surface.right + config.SNOW_PILE_CELL
+                    )
+                    self._flakes.append(flake)
+                    surface.reposition(column)
+                    self._pile_dirty = True
+                    moved = True
+                    break
                 for step in (-1, 1):
                     neighbour = column + step
-                    if not 0 <= neighbour < len(self._columns):
+                    if not 0 <= neighbour < len(columns):
                         continue
-                    if height - len(self._columns[neighbour]) >= slope:
-                        flake = self._columns[column].pop()
-                        flake.x = neighbour * config.SNOW_PILE_CELL + config.SNOW_PILE_CELL / 2
-                        self._flakes.append(flake)  # falls into the gap
-                        self._reposition(column)
-                        self._pile_dirty = True
-                        moved = True
-                        break
+                    if len(columns[neighbour]) >= surface.pile_max:
+                        continue  # no room to crumble into
+                    if not surface.crumbles(height, len(columns[neighbour])):
+                        continue
+                    # Move the flake straight into the neighbour's stack. Sending
+                    # it back into the air could drop it below a stack that grew
+                    # in the same pass, making it fall through the pile.
+                    flake = columns[column].pop()
+                    columns[neighbour].append(flake)
+                    surface.reposition(column)
+                    surface.reposition(neighbour)
+                    self._pile_dirty = True
+                    moved = True
+                    break
                 if moved:
                     break
             if not moved:
@@ -426,8 +731,9 @@ class SnowCanvas(QWidget):
         w = self.width()
         h = self.height()
         drift = self._wind * config.SNOW_WIND_DRIFT
-        cell = config.SNOW_PILE_CELL
         had = bool(self._flakes) or bool(self._attached)
+
+        self._poll_windows()
 
         held = self._interactive and winapi.left_button_down()
         if held:
@@ -441,10 +747,12 @@ class SnowCanvas(QWidget):
         if held and self._attached:
             self._move_attached()
 
+        surfaces_now = self._surfaces()
         landed = 0
         destroyed = 0
         alive: List[_Flake] = []
         for flake in self._flakes:
+            prev_y = flake.y
             flake.y += flake.fall_speed()
             flake.x += drift * flake.wind_scale()
             flake.phase += flake.sway_speed * flake.sway_scale()
@@ -454,20 +762,16 @@ class SnowCanvas(QWidget):
                 destroyed += 1
                 continue
 
-            if self._interactive and not flake.through:
-                column = self._column_for(flake.x)
-                landing_y = h - (len(self._columns[column]) + 0.5) * cell
-                if flake.y >= landing_y:
-                    if self._land(flake):
-                        landed += 1
-                        continue
-                    # No room in the column: keep falling through the pile.
-                    flake.through = True
+            if self._interactive and self._try_land(flake, prev_y, surfaces_now):
+                landed += 1
+                continue
 
             alive.append(flake)
         self._flakes = alive
 
-        if self._interactive and landed:
+        if self._interactive:
+            # Keep every pile at its resting shape, even when nothing happened
+            # to land this tick (menu changes can leave a column too steep).
             self._stabilize()
 
         # Constant spawner: new flakes keep entering from the top while the sky
@@ -496,16 +800,21 @@ class SnowCanvas(QWidget):
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QColor(255, 255, 255, 210))
-        for stack in self._columns:
-            for flake in stack:
-                p.drawEllipse(QPointF(flake.x, flake.y), flake.radius, flake.radius)
+        for surface in self._surfaces():
+            for stack in surface.columns:
+                for flake in stack:
+                    p.drawEllipse(QPointF(flake.x, flake.y), flake.radius, flake.radius)
         p.end()
         self._pile_dirty = False
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         self._pile_pixmap = QPixmap(self.size())
-        self._clear_pile()
+        self._ground = self._make_ground()
+        for surface in self._windows.values():
+            for stack in surface.columns:
+                stack.clear()
+        self._pile_dirty = True
 
     def paintEvent(self, _event) -> None:
         if self._pile_pixmap is None and not self._flakes and not self._attached:
@@ -513,7 +822,7 @@ class SnowCanvas(QWidget):
 
         p = QPainter(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
-        if self._columns and any(self._columns):
+        if any(surface.has_snow() for surface in self._surfaces()):
             if self._pile_dirty:
                 self._rebuild_pile()
             p.drawPixmap(0, 0, self._pile_pixmap)
