@@ -112,7 +112,6 @@ class OverlayWindow(QWidget):
         self.menu.windowPileChanged.connect(self.snow.set_window_pile_max)
         self.menu.windowSlopeChanged.connect(self.snow.set_window_slope)
         self.menu.clickThroughToggled.connect(self.enable_click_through)
-        self.menu.load_settings()
 
         self._click_through = True
         self._menu_open = False
@@ -127,6 +126,7 @@ class OverlayWindow(QWidget):
         self.hover.add(self.arrow)
         self.hover.add(self.menu)
         self.hover.hoverChanged.connect(self._on_hover_changed)
+        self.menu.load_settings()
 
     # -- menu -----------------------------------------------------------
     def toggle_menu(self) -> None:
