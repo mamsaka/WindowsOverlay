@@ -335,12 +335,6 @@ class SlideMenu(QFrame):
         for block in self._window_blocks:
             root.addWidget(block)
 
-        self.reset_button = QPushButton("Восстановить по умолчанию")
-        self.reset_button.setObjectName("reset")
-        self.reset_button.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.reset_button.clicked.connect(self.reset_defaults)
-        root.addWidget(self.reset_button)
-
         self.functional_title = QLabel("Функциональные настройки")
         self.functional_title.setObjectName("section")
         root.addWidget(self.functional_title)
@@ -350,6 +344,12 @@ class SlideMenu(QFrame):
         )
         self.click_through_toggle.setChecked(True)  # on by default
         root.addWidget(self.click_through_block)
+
+        self.reset_button = QPushButton("Восстановить по умолчанию")
+        self.reset_button.setObjectName("reset")
+        self.reset_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.reset_button.clicked.connect(self.reset_defaults)
+        root.addWidget(self.reset_button)
         root.addStretch(1)
 
         self.toggle.toggled.connect(self._on_snow_toggled)
