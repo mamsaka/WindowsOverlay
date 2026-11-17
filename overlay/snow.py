@@ -212,15 +212,14 @@ class SnowCanvas(QWidget):
             self._clear_pile()
             self.update()
         else:
-            self._fill_pool()
+            # Natural spawning only: the sky starts empty and fills from the top.
+            self._spawn_accum = 0.0
 
     def set_wind(self, wind: float) -> None:
         self._wind = max(-1.0, min(1.0, wind))
 
     def set_density(self, density: float) -> None:
         self._density = max(0.0, min(1.0, density))
-        if self._enabled:
-            self._fill_pool()
 
     def set_interactive(self, enabled: bool) -> None:
         self._interactive = enabled
@@ -497,13 +496,10 @@ class SnowCanvas(QWidget):
     def _target_count(self) -> int:
         return int(round(self._density * config.SNOW_MAX_FLAKES))
 
-    def _new_flake(self, at_top: bool = False) -> _Flake:
+    def _new_flake(self) -> _Flake:
         w = max(1, self.width())
         h = max(1, self.height())
-        if at_top:
-            x, y = self._spawn_point(w, h)
-        else:
-            x, y = random.uniform(0.0, w), random.uniform(0.0, h)
+        x, y = self._spawn_point(w, h)
         return _Flake(
             x,
             y,
@@ -526,13 +522,6 @@ class SnowCanvas(QWidget):
             x = -depth if wind > 0 else w + depth
             return x, random.uniform(-24.0, h * 0.9)
         return random.uniform(0.0, w), random.uniform(-40.0, -4.0)
-
-    def _fill_pool(self) -> None:
-        target = self._target_count()
-        while len(self._flakes) > target:
-            self._flakes.pop()
-        while len(self._flakes) < target:
-            self._flakes.append(self._new_flake())
 
     # -- interaction -----------------------------------------------------
     def _cursor_local(self) -> QPointF:
@@ -783,15 +772,17 @@ class SnowCanvas(QWidget):
 
             alive.append(flake)
         self._flakes = alive
+        # A flake that leaves the screen or lands in a pile is simply gone; new
+        # ones arrive only through the natural spawner below.
 
         if self._interactive:
             # Keep every pile at its resting shape, even when nothing happened
             # to land this tick (menu changes can leave a column too steep).
             self._stabilize()
 
-        # Constant spawner: new flakes keep entering from the top while the sky
-        # is below the target count (set by density). This keeps snow falling
-        # even as flakes land in the pile or get destroyed.
+        # The only spawner in every mode: flakes keep entering from the sky
+        # (top or windward edge) while the falling count is below the target.
+        # No refill happens because a flake was destroyed or landed.
         spawned = 0
         target = self._target_count()
         if len(self._flakes) < target:
@@ -799,8 +790,10 @@ class SnowCanvas(QWidget):
             self._spawn_accum += per_second * (config.SNOW_TICK_MS / 1000.0)
             while self._spawn_accum >= 1.0 and len(self._flakes) < target:
                 self._spawn_accum -= 1.0
-                self._flakes.append(self._new_flake(at_top=True))
+                self._flakes.append(self._new_flake())
                 spawned += 1
+        else:
+            self._spawn_accum = 0.0
 
         if had or held or landed or destroyed or spawned:
             self.update()
