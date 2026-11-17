@@ -21,3 +21,6 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Saved user settings (snow parameters only; functional settings are not stored)
+settings.env

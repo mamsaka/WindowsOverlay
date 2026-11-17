@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Callable, Tuple
 
-from PyQt6.QtCore import QLocale, QPointF, QRectF, Qt, pyqtSignal
+from PyQt6.QtCore import QLocale, QPointF, QRectF, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QDoubleValidator, QPainter, QPen
 from PyQt6.QtWidgets import (
     QAbstractButton,
@@ -12,13 +12,14 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QPushButton,
     QScrollArea,
     QSlider,
     QVBoxLayout,
     QWidget,
 )
 
-from . import config
+from . import config, settings
 
 BLOCK_HEIGHT = 46
 ROW_HEIGHT = 28
@@ -33,6 +34,26 @@ def _accent(alpha: float = 1.0) -> QColor:
     color = QColor(config.ACCENT_COLOR)
     color.setAlphaF(alpha)
     return color
+
+
+def _as_bool(value: object, default: bool) -> bool:
+    if value is None:
+        return default
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _as_int(value: object, default: int) -> int:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def _as_float(value: object, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 class ToggleSwitch(QAbstractButton):
@@ -170,6 +191,15 @@ class SlideMenu(QFrame):
             }
             QLineEdit#number:focus { border: 1px solid rgba(159, 176, 255, 0.85); }
             QFrame#separator { background: rgba(130, 150, 255, 0.25); border: none; }
+            QLabel#section { font-size: 12px; font-weight: 600; color: rgba(223, 228, 255, 0.75); }
+            QPushButton#reset {
+                background: rgba(130, 150, 255, 0.12);
+                border: 1px solid rgba(130, 150, 255, 0.30);
+                border-radius: 8px;
+                color: #dfe4ff;
+                padding: 6px;
+            }
+            QPushButton#reset:hover { background: rgba(130, 150, 255, 0.22); }
             QSlider::groove:horizontal {
                 height: 4px; border-radius: 2px;
                 background: rgba(130, 150, 255, 0.18);
@@ -305,6 +335,15 @@ class SlideMenu(QFrame):
         for block in self._window_blocks:
             root.addWidget(block)
 
+        self.reset_button = QPushButton("Восстановить по умолчанию")
+        self.reset_button.setObjectName("reset")
+        self.reset_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.reset_button.clicked.connect(self.reset_defaults)
+        root.addWidget(self.reset_button)
+
+        self.functional_title = QLabel("Функциональные настройки")
+        self.functional_title.setObjectName("section")
+        root.addWidget(self.functional_title)
         root.addWidget(self._make_separator())
         self.click_through_block, self.click_through_toggle = self._make_toggle_row(
             "Нажатие сквозь"
@@ -334,6 +373,35 @@ class SlideMenu(QFrame):
         self.windows_toggle.toggled.connect(self._on_windows_toggled)
         self.window_pile_slider.valueChanged.connect(self.windowPileChanged.emit)
         self.window_slope_slider.valueChanged.connect(self.windowSlopeChanged.emit)
+
+        self._loading = False
+        self._save_timer = QTimer(self)
+        self._save_timer.setSingleShot(True)
+        self._save_timer.setInterval(400)
+        self._save_timer.timeout.connect(self._save_settings)
+        for signal in (
+            self.toggle.toggled,
+            self.interactive_toggle.toggled,
+            self.density_slider.valueChanged,
+            self.wind_slider.valueChanged,
+            self.fall_slider.valueChanged,
+            self.sway_slider.valueChanged,
+            self.size_slider.valueChanged,
+            self.grab_slider.valueChanged,
+            self.clump_slider.valueChanged,
+            self.pile_slider.valueChanged,
+            self.slope_slider.valueChanged,
+            self.released_wind.valueChanged,
+            self.released_speed.valueChanged,
+            self.released_sway.valueChanged,
+            self.slip_toggle.toggled,
+            self.leash_slider.valueChanged,
+            self.follow_slider.valueChanged,
+            self.windows_toggle.toggled,
+            self.window_pile_slider.valueChanged,
+            self.window_slope_slider.valueChanged,
+        ):
+            signal.connect(self._schedule_save)
 
         self._apply_visibility()
 
@@ -477,6 +545,112 @@ class SlideMenu(QFrame):
     def _on_slip_toggled(self, checked: bool) -> None:
         self._apply_visibility()
         self.slipToggled.emit(checked)
+
+    # -- persistence -----------------------------------------------------
+    def _schedule_save(self, *_args) -> None:
+        if not self._loading:
+            self._save_timer.start()
+
+    def _save_settings(self) -> None:
+        if self._loading:
+            return
+        settings.save(
+            {
+                "snow_enabled": "1" if self.toggle.isChecked() else "0",
+                "interactive": "1" if self.interactive_toggle.isChecked() else "0",
+                "density": self.density_slider.value(),
+                "wind": self.wind_slider.value(),
+                "fall": self.fall_slider.value(),
+                "sway": self.sway_slider.value(),
+                "size": self.size_slider.value(),
+                "grab": self.grab_slider.value(),
+                "clump": self.clump_slider.value(),
+                "pile": self.pile_slider.value(),
+                "slope": self.slope_slider.value(),
+                "released_wind": _fmt_number(self.released_wind.value()),
+                "released_speed": _fmt_number(self.released_speed.value()),
+                "released_sway": _fmt_number(self.released_sway.value()),
+                "slip": "1" if self.slip_toggle.isChecked() else "0",
+                "leash": self.leash_slider.value(),
+                "follow": self.follow_slider.value(),
+                "windows": "1" if self.windows_toggle.isChecked() else "0",
+                "window_pile": self.window_pile_slider.value(),
+                "window_slope": self.window_slope_slider.value(),
+            }
+        )
+
+    def load_settings(self) -> None:
+        data = settings.load()
+        if not data:
+            return
+        self._loading = True
+        try:
+            self.toggle.setChecked(_as_bool(data.get("snow_enabled"), self.toggle.isChecked()))
+            self.interactive_toggle.setChecked(
+                _as_bool(data.get("interactive"), self.interactive_toggle.isChecked())
+            )
+            self.density_slider.setValue(_as_int(data.get("density"), self.density_slider.value()))
+            self.wind_slider.setValue(_as_int(data.get("wind"), self.wind_slider.value()))
+            self.fall_slider.setValue(_as_int(data.get("fall"), self.fall_slider.value()))
+            self.sway_slider.setValue(_as_int(data.get("sway"), self.sway_slider.value()))
+            self.size_slider.setValue(_as_int(data.get("size"), self.size_slider.value()))
+            self.grab_slider.setValue(_as_int(data.get("grab"), self.grab_slider.value()))
+            self.clump_slider.setValue(_as_int(data.get("clump"), self.clump_slider.value()))
+            self.pile_slider.setValue(_as_int(data.get("pile"), self.pile_slider.value()))
+            self.slope_slider.setValue(_as_int(data.get("slope"), self.slope_slider.value()))
+            self.released_wind.setText(
+                _fmt_number(_as_float(data.get("released_wind"), self.released_wind.value()))
+            )
+            self.released_speed.setText(
+                _fmt_number(_as_float(data.get("released_speed"), self.released_speed.value()))
+            )
+            self.released_sway.setText(
+                _fmt_number(_as_float(data.get("released_sway"), self.released_sway.value()))
+            )
+            self.slip_toggle.setChecked(_as_bool(data.get("slip"), self.slip_toggle.isChecked()))
+            self.leash_slider.setValue(_as_int(data.get("leash"), self.leash_slider.value()))
+            self.follow_slider.setValue(_as_int(data.get("follow"), self.follow_slider.value()))
+            self.windows_toggle.setChecked(
+                _as_bool(data.get("windows"), self.windows_toggle.isChecked())
+            )
+            self.window_pile_slider.setValue(
+                _as_int(data.get("window_pile"), self.window_pile_slider.value())
+            )
+            self.window_slope_slider.setValue(
+                _as_int(data.get("window_slope"), self.window_slope_slider.value())
+            )
+        finally:
+            self._loading = False
+            self._apply_visibility()
+
+    def reset_defaults(self) -> None:
+        self._loading = True
+        try:
+            self.toggle.setChecked(False)
+            self.interactive_toggle.setChecked(False)
+            self.density_slider.setValue(50)
+            self.wind_slider.setValue(0)
+            self.fall_slider.setValue(100)
+            self.sway_slider.setValue(100)
+            self.size_slider.setValue(100)
+            self.grab_slider.setValue(int(config.SNOW_GRAB_RADIUS))
+            self.clump_slider.setValue(config.SNOW_CLUMP_MAX)
+            self.pile_slider.setValue(config.SNOW_PILE_MAX)
+            self.slope_slider.setValue(config.SNOW_PILE_SLOPE)
+            self.released_wind.setText(_fmt_number(config.SNOW_RELEASED_WIND))
+            self.released_speed.setText(_fmt_number(config.SNOW_RELEASED_SPEED))
+            self.released_sway.setText(_fmt_number(config.SNOW_RELEASED_SWAY))
+            self.slip_toggle.setChecked(True)
+            self.leash_slider.setValue(int(config.SNOW_CLUMP_LEASH))
+            self.follow_slider.setValue(int(round(config.SNOW_FOLLOW_LERP * 100)))
+            self.windows_toggle.setChecked(False)
+            self.window_pile_slider.setValue(config.SNOW_WINDOW_PILE_MAX)
+            self.window_slope_slider.setValue(config.SNOW_WINDOW_PILE_SLOPE)
+            self.click_through_toggle.setChecked(True)
+        finally:
+            self._loading = False
+            self._apply_visibility()
+        self._save_settings()
 
     # -- state -----------------------------------------------------------
     @property

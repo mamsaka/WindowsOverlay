@@ -112,6 +112,7 @@ class OverlayWindow(QWidget):
         self.menu.windowPileChanged.connect(self.snow.set_window_pile_max)
         self.menu.windowSlopeChanged.connect(self.snow.set_window_slope)
         self.menu.clickThroughToggled.connect(self.enable_click_through)
+        self.menu.load_settings()
 
         self._click_through = True
         self._menu_open = False
