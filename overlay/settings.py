@@ -1,4 +1,4 @@
-"""Tiny KEY=VALUE persistence for snow settings.
+"""Tiny KEY=VALUE persistence for snow and leaf settings.
 
 Functional settings (click-through) are deliberately not stored: they always
 start at their defaults.  The file lives next to the project, not inside the
@@ -42,7 +42,7 @@ def load() -> dict[str, str]:
 
 
 def save(values: dict[str, object]) -> None:
-    lines = ["# Snow overlay settings (auto-saved; functional settings are not stored)"]
+    lines = ["# Overlay settings (auto-saved; functional settings are not stored)"]
     for key in sorted(values):
         lines.append(f"{key}={values[key]}")
     try:

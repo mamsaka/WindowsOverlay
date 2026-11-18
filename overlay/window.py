@@ -19,6 +19,7 @@ from PyQt6.QtGui import QColor, QCursor, QGuiApplication, QPainter
 from PyQt6.QtWidgets import QApplication, QVBoxLayout, QWidget
 
 from . import config, state, winapi
+from .leaves import LeavesCanvas
 from .menu import SlideMenu
 from .snow import SnowCanvas
 from .widgets import ArrowButton, HtmlPanel
@@ -74,6 +75,7 @@ class OverlayWindow(QWidget):
 
         self._screen = None
         self.snow = SnowCanvas(self)
+        self.leaves = LeavesCanvas(self)
 
         self.panels: list[HtmlPanel] = []
         self._panel_box = QWidget(self)
@@ -111,6 +113,14 @@ class OverlayWindow(QWidget):
         self.menu.windowsToggled.connect(self.snow.set_windows_enabled)
         self.menu.windowPileChanged.connect(self.snow.set_window_pile_max)
         self.menu.windowSlopeChanged.connect(self.snow.set_window_slope)
+        self.menu.leavesToggled.connect(self.leaves.set_enabled)
+        self.menu.leafDensityChanged.connect(self.leaves.set_density)
+        self.menu.leafWindChanged.connect(self.leaves.set_wind)
+        self.menu.leafSpeedChanged.connect(self.leaves.set_fall_scale)
+        self.menu.leafSizeChanged.connect(self.leaves.set_size_scale)
+        self.menu.leafSwirlChanged.connect(self.leaves.set_swirl_scale)
+        self.menu.leafInteractiveToggled.connect(self.leaves.set_interactive)
+        self.menu.leafWindowChanceChanged.connect(self.leaves.set_window_chance)
         self.menu.clickThroughToggled.connect(self.enable_click_through)
 
         self._click_through = True
@@ -172,6 +182,7 @@ class OverlayWindow(QWidget):
         super().resizeEvent(event)
         w, h = self.width(), self.height()
         self.snow.setGeometry(0, 0, w, h)
+        self.leaves.setGeometry(0, 0, w, h)
 
         self._panel_box.adjustSize()
         box = self._panel_box.size()

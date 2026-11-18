@@ -5,7 +5,9 @@ along the bottom edge (the taskbar boundary); with "Сбор на окнах" en
 also settle on the top edges of ordinary desktop windows, each window with its
 own pile height and crumble threshold. Piled flakes are real particles: they can
 be picked up with a held mouse button, and a column that is too much taller than
-a neighbour topples into it until the pile is stable.
+a neighbour topples into it until the pile is stable. While the pile is at rest
+it is painted as one continuous snow bank without gaps between the flakes; the
+individual circles appear again only when the pile is disturbed.
 
 Most numeric behaviour is adjustable at runtime through the ``set_*`` methods
 (defaults live in ``overlay/config.py`` and are exposed in the menu).
@@ -18,8 +20,8 @@ import math
 import random
 from typing import Dict, List, Optional, Tuple
 
-from PyQt6.QtCore import QPointF, Qt, QTimer
-from PyQt6.QtGui import QColor, QCursor, QPainter, QPixmap
+from PyQt6.QtCore import QPointF, QRectF, Qt, QTimer
+from PyQt6.QtGui import QColor, QCursor, QPainter, QPainterPath, QPixmap
 from PyQt6.QtWidgets import QWidget
 
 from . import config, surfaces, winapi
@@ -30,7 +32,7 @@ LOGGER = logging.getLogger(__name__)
 class _Flake:
     __slots__ = (
         "x", "y", "radius", "fall", "phase", "sway_speed", "sway_amp",
-        "slot", "released", "blocked",
+        "slot", "released", "blocked", "vx", "vy",
     )
 
     def __init__(
@@ -53,6 +55,10 @@ class _Flake:
         self.slot = -1
         self.released = False
         self.blocked = False
+        # Extra velocity on top of the regular snowfall, used to carry the
+        # cursor's throw after a flake is let go or slips out of the clump.
+        self.vx = 0.0
+        self.vy = 0.0
 
     def fall_speed(self) -> float:
         return self.fall * (config.SNOW_RELEASED_SPEED if self.released else 1.0)
@@ -131,6 +137,8 @@ class _Surface:
         flake.x = self.column_center(column)
         flake.y = self.level_y(level)
         flake.blocked = False
+        flake.vx = 0.0
+        flake.vy = 0.0
 
     def refresh_top(self, column: int) -> None:
         """Update the cached top level after a direct change to a column."""
@@ -392,6 +400,9 @@ class SnowCanvas(QWidget):
         stack = surface.columns[column]
         if not stack:
             return
+        for flake in stack:
+            flake.vx = 0.0
+            flake.vy = 0.0
         self._flakes.extend(stack)
         stack.clear()
         surface.top[column] = -1
@@ -516,9 +527,6 @@ class SnowCanvas(QWidget):
         return blocked
 
     # -- pool ------------------------------------------------------------
-    def _target_count(self) -> int:
-        return int(round(self._density * config.SNOW_MAX_FLAKES))
-
     def _new_flake(self) -> _Flake:
         w = max(1, self.width())
         h = max(1, self.height())
@@ -569,6 +577,8 @@ class SnowCanvas(QWidget):
         if slot < 0:
             return False
         flake.slot = slot
+        flake.vx = 0.0
+        flake.vy = 0.0
         self._attached.append(flake)
         return True
 
@@ -615,6 +625,8 @@ class SnowCanvas(QWidget):
                         continue  # taken into the clump
                     if i > lowest:
                         # Lost its support: let it fall and settle again.
+                        flake.vx = 0.0
+                        flake.vy = 0.0
                         self._flakes.append(flake)
                     else:
                         kept.append(flake)
@@ -636,8 +648,16 @@ class SnowCanvas(QWidget):
         worst_lag = leash_sq
         for flake in self._attached:
             offset = self._slot_offsets[flake.slot]
+            old_x = flake.x
+            old_y = flake.y
             flake.x += (cx + offset[0] - flake.x) * lerp
             flake.y += (cy + offset[1] - flake.y) * lerp
+            # Remember how fast the clump is actually moving: if the flake is
+            # let go or slips out now, it keeps this velocity instead of
+            # dropping straight down.
+            limit = config.SNOW_THROW_MAX
+            flake.vx = max(-limit, min(limit, flake.x - old_x))
+            flake.vy = max(-limit, min(limit, flake.y - old_y))
 
             if not self._slip_enabled:
                 still.append(flake)
@@ -742,6 +762,8 @@ class SnowCanvas(QWidget):
                         if column == 0
                         else surface.right + config.SNOW_PILE_CELL
                     )
+                    flake.vx = 0.0
+                    flake.vy = 0.0
                     self._flakes.append(flake)
                     surface.reposition(column)
                     self._pile_dirty = True
@@ -804,6 +826,14 @@ class SnowCanvas(QWidget):
         alive: List[_Flake] = []
         for flake in self._flakes:
             prev_y = flake.y
+            # Carried momentum first: a flake thrown by the cursor keeps flying
+            # along its trajectory, then the extra velocity fades away and the
+            # normal snowfall takes over again.
+            flake.x += flake.vx
+            flake.y += flake.vy
+            drag = config.SNOW_THROW_DRAG
+            flake.vx *= drag
+            flake.vy *= drag
             flake.y += flake.fall_speed()
             flake.x += drift * flake.wind_scale()
             flake.phase += flake.sway_speed * flake.sway_scale()
@@ -828,37 +858,63 @@ class SnowCanvas(QWidget):
             self._stabilize()
 
         # The only spawner in every mode: flakes keep entering from the sky
-        # (top or windward edge) while the falling count is below the target.
-        # No refill happens because a flake was destroyed or landed.
+        # (top or windward edge) at a density-driven rate. There is no
+        # population cap, so the count settles at rate x average lifetime.
         spawned = 0
-        target = self._target_count()
-        if len(self._flakes) < target:
-            per_second = self._density * config.SNOW_SPAWN_PER_SEC
-            self._spawn_accum += per_second * (config.SNOW_TICK_MS / 1000.0)
-            while self._spawn_accum >= 1.0 and len(self._flakes) < target:
-                self._spawn_accum -= 1.0
-                self._flakes.append(self._new_flake())
-                spawned += 1
-        else:
-            self._spawn_accum = 0.0
+        per_second = self._density * config.SNOW_SPAWN_PER_SEC
+        self._spawn_accum += per_second * (config.SNOW_TICK_MS / 1000.0)
+        while self._spawn_accum >= 1.0:
+            self._spawn_accum -= 1.0
+            self._flakes.append(self._new_flake())
+            spawned += 1
 
         if had or held or landed or destroyed or spawned:
             self.update()
 
     # -- painting --------------------------------------------------------
     def _rebuild_pile(self) -> None:
+        """Paint each pile as one continuous snow bank.
+
+        Settled flakes sit in touching cells, so drawing every flake as its own
+        circle left visible gaps between them. Instead the pile is filled as a
+        single path: a body rectangle per column (overlapping its neighbours a
+        little) plus a rounded cap on top. The winding fill rule unions the
+        shapes, so the translucent snow is blended once and no seams appear
+        where the pieces meet. A pile only breaks back into separate flakes
+        when it is picked up.
+        """
         if self._pile_pixmap is None or self._pile_pixmap.size() != self.size():
             self._pile_pixmap = QPixmap(self.size())
         self._pile_pixmap.fill(Qt.GlobalColor.transparent)
 
+        cell = float(config.SNOW_PILE_CELL)
+        half = cell / 2.0
+        body = QPainterPath()
+        body.setFillRule(Qt.FillRule.WindingFill)
+        for surface in self._surfaces():
+            base_y = surface.base_y
+            for column, stack in enumerate(surface.columns):
+                count = len(stack)
+                if count == 0:
+                    continue
+                center_x = surface.column_center(column)
+                top_y = base_y - count * cell
+                # The cap sits a little below the very top so the dome stays
+                # within the column and blends into its neighbours.
+                cap_y = top_y + cell * 0.45
+                body.addRect(
+                    QRectF(center_x - half - 0.6, cap_y, cell + 1.2, base_y - cap_y)
+                )
+                # Slightly irregular domes keep the bank from looking machined.
+                # The cap always spans the full cell so a lone tall column does
+                # not end in a thin spike.
+                cap = cell * 0.5 + min(1.6, stack[-1].radius * 0.45)
+                body.addEllipse(QPointF(center_x, cap_y), cap, cap)
+
         p = QPainter(self._pile_pixmap)
         p.setRenderHint(QPainter.RenderHint.Antialiasing)
         p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QColor(255, 255, 255, 210))
-        for surface in self._surfaces():
-            for stack in surface.columns:
-                for flake in stack:
-                    p.drawEllipse(QPointF(flake.x, flake.y), flake.radius, flake.radius)
+        p.fillPath(body, QColor(255, 255, 255, 215))
         p.end()
         self._pile_dirty = False
         self._pile_present = True

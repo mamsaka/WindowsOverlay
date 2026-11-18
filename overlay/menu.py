@@ -144,6 +144,7 @@ class SlideMenu(QFrame):
     snowToggled = pyqtSignal(bool)
     interactiveToggled = pyqtSignal(bool)
     clickThroughToggled = pyqtSignal(bool)
+    leavesToggled = pyqtSignal(bool)
     densityChanged = pyqtSignal(float)     # 0 .. 1
     windChanged = pyqtSignal(float)        # -1 .. 1
     fallChanged = pyqtSignal(float)        # fall speed multiplier
@@ -162,6 +163,13 @@ class SlideMenu(QFrame):
     windowsToggled = pyqtSignal(bool)
     windowPileChanged = pyqtSignal(int)
     windowSlopeChanged = pyqtSignal(int)
+    leafDensityChanged = pyqtSignal(float)  # 0 .. 1
+    leafWindChanged = pyqtSignal(float)     # -1 .. 1
+    leafSpeedChanged = pyqtSignal(float)    # fall speed multiplier
+    leafSizeChanged = pyqtSignal(float)     # leaf size multiplier
+    leafSwirlChanged = pyqtSignal(float)    # flutter intensity multiplier
+    leafInteractiveToggled = pyqtSignal(bool)
+    leafWindowChanceChanged = pyqtSignal(float)  # 0 .. 1
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -242,7 +250,9 @@ class SlideMenu(QFrame):
         root.setContentsMargins(12, 10, 12, 12)
         root.setSpacing(12)
 
-        root.addWidget(self._make_title("Снег", self._make_toggle("", "snow")))
+        snow_toggle = self._make_toggle("", "snow")
+        self.toggle = snow_toggle
+        root.addWidget(self._make_title("Снег", snow_toggle))
 
         self.density_block, self.density_slider, _ = self._make_block(
             "Плотность", "реже … чаще", 0, 100, 50, lambda v: f"{v}%"
@@ -300,6 +310,33 @@ class SlideMenu(QFrame):
             config.SNOW_WINDOW_PILE_SLOPE, lambda v: f"{v}",
         )
 
+        self.leaves_toggle = self._make_toggle("", "leaves")
+        self.leaves_title_block = self._make_title("Осенние листья", self.leaves_toggle)
+        self.leaf_density_block, self.leaf_density_slider, _ = self._make_block(
+            "Плотность листвы", "реже … чаще", 0, 100, 50, lambda v: f"{v}%"
+        )
+        self.leaf_wind_block, self.leaf_wind_slider, _ = self._make_block(
+            "Ветер листвы", "влево … вправо", -100, 100, 20, lambda v: f"{v}%",
+            center=True,
+        )
+        self.leaf_speed_block, self.leaf_speed_slider, _ = self._make_block(
+            "Скорость листвы", "скорость падения", 10, 300, 100, lambda v: f"{v}%"
+        )
+        self.leaf_size_block, self.leaf_size_slider, _ = self._make_block(
+            "Размер листвы", "величина листьев", 50, 250, 100, lambda v: f"{v}%"
+        )
+        self.leaf_swirl_block, self.leaf_swirl_slider, _ = self._make_block(
+            "Кружение", "качание и кувыркание", 0, 200, 100, lambda v: f"{v}%"
+        )
+        self.leaf_interactive_block, self.leaf_interactive_toggle = self._make_toggle_row(
+            "Интерактивные листья"
+        )
+        self.leaf_interactive_toggle.setChecked(True)  # breeze and landings on
+        self.leaf_window_block, self.leaf_window_slider, _ = self._make_block(
+            "Приземление на окна", "шанс лечь на верхнюю кромку окна", 0, 100,
+            config.LEAF_WINDOW_CHANCE, lambda v: f"{v}%",
+        )
+
         self._snow_blocks = (
             self.density_block,
             self.wind_block,
@@ -323,6 +360,13 @@ class SlideMenu(QFrame):
             self.window_pile_block,
             self.window_slope_block,
         )
+        self._leaf_blocks = (
+            self.leaf_density_block,
+            self.leaf_wind_block,
+            self.leaf_speed_block,
+            self.leaf_size_block,
+            self.leaf_swirl_block,
+        )
 
         for block in self._snow_blocks:
             root.addWidget(block)
@@ -335,10 +379,17 @@ class SlideMenu(QFrame):
         for block in self._window_blocks:
             root.addWidget(block)
 
+        root.addWidget(self._make_separator())
+        root.addWidget(self.leaves_title_block)
+        for block in self._leaf_blocks:
+            root.addWidget(block)
+        root.addWidget(self.leaf_interactive_block)
+        root.addWidget(self.leaf_window_block)
+
+        root.addWidget(self._make_separator())
         self.functional_title = QLabel("Функциональные настройки")
         self.functional_title.setObjectName("section")
         root.addWidget(self.functional_title)
-        root.addWidget(self._make_separator())
         self.click_through_block, self.click_through_toggle = self._make_toggle_row(
             "Нажатие сквозь"
         )
@@ -373,6 +424,26 @@ class SlideMenu(QFrame):
         self.windows_toggle.toggled.connect(self._on_windows_toggled)
         self.window_pile_slider.valueChanged.connect(self.windowPileChanged.emit)
         self.window_slope_slider.valueChanged.connect(self.windowSlopeChanged.emit)
+        self.leaves_toggle.toggled.connect(self._on_leaves_toggled)
+        self.leaf_density_slider.valueChanged.connect(
+            lambda v: self.leafDensityChanged.emit(v / 100.0)
+        )
+        self.leaf_wind_slider.valueChanged.connect(
+            lambda v: self.leafWindChanged.emit(v / 100.0)
+        )
+        self.leaf_speed_slider.valueChanged.connect(
+            lambda v: self.leafSpeedChanged.emit(v / 100.0)
+        )
+        self.leaf_size_slider.valueChanged.connect(
+            lambda v: self.leafSizeChanged.emit(v / 100.0)
+        )
+        self.leaf_swirl_slider.valueChanged.connect(
+            lambda v: self.leafSwirlChanged.emit(v / 100.0)
+        )
+        self.leaf_interactive_toggle.toggled.connect(self._on_leaf_interactive_toggled)
+        self.leaf_window_slider.valueChanged.connect(
+            lambda v: self.leafWindowChanceChanged.emit(v / 100.0)
+        )
 
         self._loading = False
         self._save_timer = QTimer(self)
@@ -400,6 +471,14 @@ class SlideMenu(QFrame):
             self.windows_toggle.toggled,
             self.window_pile_slider.valueChanged,
             self.window_slope_slider.valueChanged,
+            self.leaves_toggle.toggled,
+            self.leaf_density_slider.valueChanged,
+            self.leaf_wind_slider.valueChanged,
+            self.leaf_speed_slider.valueChanged,
+            self.leaf_size_slider.valueChanged,
+            self.leaf_swirl_slider.valueChanged,
+            self.leaf_interactive_toggle.toggled,
+            self.leaf_window_slider.valueChanged,
         ):
             signal.connect(self._schedule_save)
 
@@ -417,7 +496,6 @@ class SlideMenu(QFrame):
         row.addWidget(label)
         row.addStretch(1)
         row.addWidget(toggle)
-        self.toggle = toggle
         return block
 
     def _make_toggle(self, text: str, name: str) -> ToggleSwitch:
@@ -530,6 +608,14 @@ class SlideMenu(QFrame):
         for block in self._window_blocks:
             block.setVisible(windows_on)
 
+        leaves_on = self.leaves_toggle.isChecked()
+        for block in self._leaf_blocks:
+            block.setVisible(leaves_on)
+        self.leaf_interactive_block.setVisible(leaves_on)
+        self.leaf_window_block.setVisible(
+            leaves_on and self.leaf_interactive_toggle.isChecked()
+        )
+
     def _on_snow_toggled(self, checked: bool) -> None:
         self._apply_visibility()
         self.snowToggled.emit(checked)
@@ -545,6 +631,14 @@ class SlideMenu(QFrame):
     def _on_slip_toggled(self, checked: bool) -> None:
         self._apply_visibility()
         self.slipToggled.emit(checked)
+
+    def _on_leaves_toggled(self, checked: bool) -> None:
+        self._apply_visibility()
+        self.leavesToggled.emit(checked)
+
+    def _on_leaf_interactive_toggled(self, checked: bool) -> None:
+        self._apply_visibility()
+        self.leafInteractiveToggled.emit(checked)
 
     # -- persistence -----------------------------------------------------
     def _schedule_save(self, *_args) -> None:
@@ -576,6 +670,14 @@ class SlideMenu(QFrame):
                 "windows": "1" if self.windows_toggle.isChecked() else "0",
                 "window_pile": self.window_pile_slider.value(),
                 "window_slope": self.window_slope_slider.value(),
+                "leaves": "1" if self.leaves_toggle.isChecked() else "0",
+                "leaf_density": self.leaf_density_slider.value(),
+                "leaf_wind": self.leaf_wind_slider.value(),
+                "leaf_speed": self.leaf_speed_slider.value(),
+                "leaf_size": self.leaf_size_slider.value(),
+                "leaf_swirl": self.leaf_swirl_slider.value(),
+                "leaf_interactive": "1" if self.leaf_interactive_toggle.isChecked() else "0",
+                "leaf_window": self.leaf_window_slider.value(),
             }
         )
 
@@ -619,6 +721,33 @@ class SlideMenu(QFrame):
             self.window_slope_slider.setValue(
                 _as_int(data.get("window_slope"), self.window_slope_slider.value())
             )
+            self.leaves_toggle.setChecked(
+                _as_bool(data.get("leaves"), self.leaves_toggle.isChecked())
+            )
+            self.leaf_density_slider.setValue(
+                _as_int(data.get("leaf_density"), self.leaf_density_slider.value())
+            )
+            self.leaf_wind_slider.setValue(
+                _as_int(data.get("leaf_wind"), self.leaf_wind_slider.value())
+            )
+            self.leaf_speed_slider.setValue(
+                _as_int(data.get("leaf_speed"), self.leaf_speed_slider.value())
+            )
+            self.leaf_size_slider.setValue(
+                _as_int(data.get("leaf_size"), self.leaf_size_slider.value())
+            )
+            self.leaf_swirl_slider.setValue(
+                _as_int(data.get("leaf_swirl"), self.leaf_swirl_slider.value())
+            )
+            self.leaf_interactive_toggle.setChecked(
+                _as_bool(
+                    data.get("leaf_interactive"),
+                    self.leaf_interactive_toggle.isChecked(),
+                )
+            )
+            self.leaf_window_slider.setValue(
+                _as_int(data.get("leaf_window"), self.leaf_window_slider.value())
+            )
         finally:
             self._loading = False
             self._apply_visibility()
@@ -646,6 +775,14 @@ class SlideMenu(QFrame):
             self.windows_toggle.setChecked(False)
             self.window_pile_slider.setValue(config.SNOW_WINDOW_PILE_MAX)
             self.window_slope_slider.setValue(config.SNOW_WINDOW_PILE_SLOPE)
+            self.leaves_toggle.setChecked(False)
+            self.leaf_density_slider.setValue(50)
+            self.leaf_wind_slider.setValue(20)
+            self.leaf_speed_slider.setValue(100)
+            self.leaf_size_slider.setValue(100)
+            self.leaf_swirl_slider.setValue(100)
+            self.leaf_interactive_toggle.setChecked(True)
+            self.leaf_window_slider.setValue(config.LEAF_WINDOW_CHANCE)
             self.click_through_toggle.setChecked(True)
         finally:
             self._loading = False
